@@ -1,0 +1,34 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Folder {
+  id        Int      @id @default(autoincrement())
+  name      String
+  parentId  Int?
+  parent    Folder?  @relation("FolderHierarchy", fields: [parentId], references: [id])
+  children  Folder[] @relation("FolderHierarchy")
+  files     File[]
+  isStarred Boolean  @default(false)
+  isTrashed Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model File {
+  id        Int      @id @default(autoincrement())
+  name      String
+  size      Int
+  type      String
+  path      String
+  folderId  Int?
+  folder    Folder?  @relation(fields: [folderId], references: [id])
+  isStarred Boolean  @default(false)
+  isTrashed Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
