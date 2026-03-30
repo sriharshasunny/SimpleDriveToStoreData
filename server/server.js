@@ -11,6 +11,8 @@ const app = express();
 const prisma = new PrismaClient();
 const PORT = process.env.PORT || 3001;
 
+const auth = require('./middleware/auth');
+
 // Ensure uploads directory exists
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 if (!fs.existsSync(UPLOADS_DIR)) {
@@ -20,7 +22,7 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 // Middleware
 app.use(cors({ origin: '*', credentials: true }));
 app.use(express.json());
-app.use(express.urlencoded({ extended: true })); // Handle form data text fields if not multered? Multer handles multipart.
+app.use(express.urlencoded({ extended: true }));
 app.use('/uploads', express.static(UPLOADS_DIR));
 
 app.use((req, res, next) => {
@@ -34,7 +36,6 @@ const storage = multer.diskStorage({
     cb(null, UPLOADS_DIR);
   },
   filename: (req, file, cb) => {
-    // Unique filename to prevent overwrites
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
     cb(null, uniqueSuffix + '-' + file.originalname);
   }
@@ -45,46 +46,37 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
 });
 
-// --- API Routes ---
+// --- API Auth Routes ---
+app.use('/api/auth', require('./routes/auth'));
+
+// --- API Drive Routes ---
 
 // 1. List Files and Folders (Directory Content)
-app.get('/api/drive', async (req, res) => {
+app.get('/api/drive', auth, async (req, res) => {
   try {
-    const parentId = req.query.parentId ? parseInt(req.query.parentId) : null;
-    const filter = req.query.filter; // 'starred', 'trash', 'recent'
-    const search = req.query.search; // Search query
+    const parentId = req.query.parentId ? req.query.parentId : null;
+    const filter = req.query.filter; 
+    const search = req.query.search; 
 
-    let folderWhere = { isTrashed: false };
-    let fileWhere = { isTrashed: false };
+    const userId = req.user.id;
 
-    // --- Search Logic ---
+    let folderWhere = { userId, isTrashed: false };
+    let fileWhere = { userId, isTrashed: false };
+
     if (search) {
-      folderWhere = {
-        name: { contains: search },
-        isTrashed: false
-      };
-      fileWhere = {
-        name: { contains: search },
-        isTrashed: false
-      };
-    }
-    // --- Filter Logic ---
-    else if (filter === 'starred') {
-      folderWhere = { isStarred: true, isTrashed: false };
-      fileWhere = { isStarred: true, isTrashed: false };
+      folderWhere = { ...folderWhere, name: { contains: search } };
+      fileWhere = { ...fileWhere, name: { contains: search } };
+    } else if (filter === 'starred') {
+      folderWhere = { ...folderWhere, isStarred: true };
+      fileWhere = { ...fileWhere, isStarred: true };
     } else if (filter === 'trash') {
-      folderWhere = { isTrashed: true };
-      fileWhere = { isTrashed: true };
-    } else if (filter === 'recent') {
-      folderWhere = { isTrashed: false };
-      fileWhere = { isTrashed: false };
+      folderWhere = { userId, isTrashed: true };
+      fileWhere = { userId, isTrashed: true };
     } else {
-      // Default view (Browsing)
-      folderWhere = { parentId: parentId, isTrashed: false };
-      fileWhere = { folderId: parentId, isTrashed: false };
+      folderWhere = { ...folderWhere, parentId: parentId };
+      fileWhere = { ...fileWhere, folderId: parentId };
     }
 
-    // Execution
     const folders = await prisma.folder.findMany({
       where: folderWhere,
       orderBy: { updatedAt: 'desc' }
@@ -95,12 +87,11 @@ app.get('/api/drive', async (req, res) => {
       orderBy: { createdAt: 'desc' }
     });
 
-    // Handle Breadcrumbs (only if not searching/filtering)
     let breadcrumbs = [];
     if (parentId && !search && !filter) {
       let currentId = parentId;
       while (currentId) {
-        const folder = await prisma.folder.findUnique({ where: { id: currentId } });
+        const folder = await prisma.folder.findUnique({ where: { id: currentId, userId } });
         if (folder) {
           breadcrumbs.unshift({ id: folder.id, name: folder.name });
           currentId = folder.parentId;
@@ -110,11 +101,9 @@ app.get('/api/drive', async (req, res) => {
       }
     }
 
-    // Calculate Total Storage Usage
     const usage = await prisma.file.aggregate({
-      _sum: {
-        size: true
-      }
+      _sum: { size: true },
+      where: { userId, isTrashed: false }
     });
 
     res.json({
@@ -130,16 +119,15 @@ app.get('/api/drive', async (req, res) => {
 });
 
 // Toggle Attributes (Star/Trash)
-app.put('/api/files/:id/toggle', async (req, res) => {
+app.put('/api/files/:id/toggle', auth, async (req, res) => {
   try {
     const { isStarred, isTrashed } = req.body;
     const data = {};
     if (isStarred !== undefined) data.isStarred = isStarred;
     if (isTrashed !== undefined) data.isTrashed = isTrashed;
 
-    // If trashing, also untrash? No, if trashing, star doesn't matter much.
     const file = await prisma.file.update({
-      where: { id: parseInt(req.params.id) },
+      where: { id: req.params.id, userId: req.user.id },
       data
     });
     res.json(file);
@@ -148,7 +136,7 @@ app.put('/api/files/:id/toggle', async (req, res) => {
   }
 });
 
-app.put('/api/folders/:id/toggle', async (req, res) => {
+app.put('/api/folders/:id/toggle', auth, async (req, res) => {
   try {
     const { isStarred, isTrashed } = req.body;
     const data = {};
@@ -156,7 +144,7 @@ app.put('/api/folders/:id/toggle', async (req, res) => {
     if (isTrashed !== undefined) data.isTrashed = isTrashed;
 
     const folder = await prisma.folder.update({
-      where: { id: parseInt(req.params.id) },
+      where: { id: req.params.id, userId: req.user.id },
       data
     });
     res.json(folder);
@@ -165,15 +153,15 @@ app.put('/api/folders/:id/toggle', async (req, res) => {
   }
 });
 
-
 // 2. Create Folder
-app.post('/api/folders', async (req, res) => {
+app.post('/api/folders', auth, async (req, res) => {
   try {
     const { name, parentId } = req.body;
     const folder = await prisma.folder.create({
       data: {
         name,
-        parentId: parentId ? parseInt(parentId) : null
+        parentId: parentId ? parentId : null,
+        userId: req.user.id
       }
     });
     res.json(folder);
@@ -183,19 +171,15 @@ app.post('/api/folders', async (req, res) => {
 });
 
 // 3. Upload File
-app.post('/api/upload', upload.single('file'), async (req, res) => {
+app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
   const logFile = path.join(__dirname, 'debug_upload.txt');
   const log = (msg) => {
-    const timestamp = new Date().toISOString();
-    fs.appendFileSync(logFile, `[${timestamp}] ${msg}\n`);
+    fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${msg}\n`);
     console.log(msg);
   };
 
   try {
     log('[Upload] Received request');
-    log(`[Upload] Body: ${JSON.stringify(req.body)}`);
-    log(`[Upload] File: ${req.file ? req.file.originalname : 'MISSING'}`);
-
     const { folderId } = req.body;
     if (!req.file) {
       log('[Upload Error] No file in request');
@@ -208,7 +192,8 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
         size: req.file.size,
         type: req.file.mimetype,
         path: req.file.filename,
-        folderId: folderId && folderId !== 'null' ? parseInt(folderId) : null,
+        folderId: folderId && folderId !== 'null' ? folderId : null,
+        userId: req.user.id,
         isStarred: false,
         isTrashed: false
       }
@@ -218,70 +203,41 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     res.json(file);
   } catch (error) {
     log(`[Upload Error] ${error.message}`);
-    res.status(500).json({ error: 'Failed to upload file: ' + error.message });
+    res.status(500).json({ error: 'Failed to upload file' });
   }
 });
 
 // 4. Download/View File
-app.get('/api/files/:id/download', async (req, res) => {
+app.get('/api/files/:id/download', auth, async (req, res) => {
   try {
-    const file = await prisma.file.findUnique({ where: { id: parseInt(req.params.id) } });
+    const file = await prisma.file.findUnique({ where: { id: req.params.id, userId: req.user.id } });
     if (!file) return res.status(404).json({ error: 'File not found' });
 
-    // Verify path
     const filePath = path.resolve(UPLOADS_DIR, file.path);
-    console.log(`[Download] Looking for file: ${filePath} (DB Path: ${file.path})`);
-
     if (!fs.existsSync(filePath)) {
-      console.error(`[Download] File missing on disk: ${filePath}`);
       return res.status(404).json({ error: 'File content missing on server' });
     }
 
-    // res.download fails on some windows setups (async error)
-    // Switching to manual stream pipe for stability
     res.setHeader('Content-Disposition', `attachment; filename="${file.name}"`);
     res.setHeader('Content-Type', file.type || 'application/octet-stream');
-
     const fileStream = fs.createReadStream(filePath);
-
-    fileStream.on('error', (err) => {
-      console.error(`[Stream Error] ${err.message}`);
-      if (!res.headersSent) res.status(500).json({ error: 'Stream failed' });
-    });
-
+    fileStream.on('error', () => { if (!res.headersSent) res.status(500).json({ error: 'Stream failed' }); });
     fileStream.pipe(res);
   } catch (error) {
-    console.error(`[Download Error] ${error.message}`);
-    // Check if headers sent to avoid double-response
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'Download failed' });
-    }
+    if (!res.headersSent) res.status(500).json({ error: 'Download failed' });
   }
 });
 
-if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
-  app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
-}
-
-module.exports = app;
-
 // 6. Delete File
-app.delete('/api/files/:id', async (req, res) => {
+app.delete('/api/files/:id', auth, async (req, res) => {
   try {
-    const id = parseInt(req.params.id);
-    const file = await prisma.file.findUnique({ where: { id } });
+    const file = await prisma.file.findUnique({ where: { id: req.params.id, userId: req.user.id } });
     if (!file) return res.status(404).json({ error: 'File not found' });
 
-    // Delete from disk
     const filePath = path.join(UPLOADS_DIR, file.path);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
-    // Delete from DB
-    await prisma.file.delete({ where: { id } });
+    await prisma.file.delete({ where: { id: req.params.id } });
     res.json({ message: 'File deleted' });
   } catch (error) {
     console.error(error);
@@ -290,37 +246,27 @@ app.delete('/api/files/:id', async (req, res) => {
 });
 
 // 7. Delete Folder
-app.delete('/api/folders/:id', async (req, res) => {
+app.delete('/api/folders/:id', auth, async (req, res) => {
   try {
-    const id = parseInt(req.params.id);
-    // Note: This is soft/recursive delete. Prisma handles cascading if configured, 
-    // but here we might need to manually handle children if not using ON DELETE CASCADE in DB.
-    // For simplicity with SQLite default, we'll try to delete. 
-    // If it fails due to foreign key constraints, we'd need to recursive delete.
-    // Let's implement recursive delete for safety.
+    const userId = req.user.id;
+    const folderCheck = await prisma.folder.findUnique({ where: { id: req.params.id, userId } });
+    if (!folderCheck) return res.status(404).json({ error: 'Folder not found' });
 
     const deleteFolderRecursive = async (folderId) => {
-      // Find subfolders
-      const children = await prisma.folder.findMany({ where: { parentId: folderId } });
+      const children = await prisma.folder.findMany({ where: { parentId: folderId, userId } });
       for (const child of children) {
         await deleteFolderRecursive(child.id);
       }
-
-      // Delete files in this folder
-      const files = await prisma.file.findMany({ where: { folderId } });
-      for (const file of files) {
-        const filePath = path.join(UPLOADS_DIR, file.path);
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
-        await prisma.file.delete({ where: { id: file.id } });
+      const files = await prisma.file.findMany({ where: { folderId, userId } });
+      for (const f of files) {
+        const filePath = path.join(UPLOADS_DIR, f.path);
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        await prisma.file.delete({ where: { id: f.id } });
       }
-
-      // Delete folder itself
       await prisma.folder.delete({ where: { id: folderId } });
     };
 
-    await deleteFolderRecursive(id);
+    await deleteFolderRecursive(req.params.id);
     res.json({ message: 'Folder deleted' });
   } catch (error) {
     console.error(error);
@@ -329,11 +275,11 @@ app.delete('/api/folders/:id', async (req, res) => {
 });
 
 // 8. Rename File
-app.put('/api/files/:id', async (req, res) => {
+app.put('/api/files/:id', auth, async (req, res) => {
   try {
     const { name } = req.body;
     const file = await prisma.file.update({
-      where: { id: parseInt(req.params.id) },
+      where: { id: req.params.id, userId: req.user.id },
       data: { name }
     });
     res.json(file);
@@ -343,11 +289,11 @@ app.put('/api/files/:id', async (req, res) => {
 });
 
 // 9. Rename Folder
-app.put('/api/folders/:id', async (req, res) => {
+app.put('/api/folders/:id', auth, async (req, res) => {
   try {
     const { name } = req.body;
     const folder = await prisma.folder.update({
-      where: { id: parseInt(req.params.id) },
+      where: { id: req.params.id, userId: req.user.id },
       data: { name }
     });
     res.json(folder);
@@ -357,30 +303,24 @@ app.put('/api/folders/:id', async (req, res) => {
 });
 
 // 10. Extract Zip
-app.post('/api/files/:id/extract', async (req, res) => {
+app.post('/api/files/:id/extract', auth, async (req, res) => {
   try {
-    const file = await prisma.file.findUnique({ where: { id: parseInt(req.params.id) } });
+    const file = await prisma.file.findUnique({ where: { id: req.params.id, userId: req.user.id } });
     if (!file) return res.status(404).json({ error: 'File not found' });
 
     const filePath = path.resolve(UPLOADS_DIR, file.path);
     if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File missing on server' });
 
     const zip = new AdmZip(filePath);
-    const zipEntries = zip.getEntries(); // Array of ZipEntry
+    const zipEntries = zip.getEntries(); 
 
-    // Create a root folder for extraction
     const rootFolderName = file.name.replace(/\.[^/.]+$/, "") + "_extracted";
     const rootFolder = await prisma.folder.create({
-      data: {
-        name: rootFolderName,
-        parentId: file.folderId
-      }
+      data: { name: rootFolderName, parentId: file.folderId, userId: req.user.id }
     });
 
-    // Map zip path to DB folder ID
     const pathMap = { "": rootFolder.id };
 
-    // Pass 1: Directories
     for (const entry of zipEntries) {
       if (entry.isDirectory) {
         const parts = entry.entryName.split('/').filter(p => p);
@@ -390,10 +330,8 @@ app.post('/api/files/:id/extract', async (req, res) => {
         for (const part of parts) {
           currentPath += part + "/";
           if (!pathMap[currentPath]) {
-            // Check if we already created it in this loop?
-            // For simplicity, just create. (Prisma might duplicate if name conflict in same folder? SQLite allows same name different ID usually, or we assume Zip integrity).
             const newFolder = await prisma.folder.create({
-              data: { name: part, parentId: parentId }
+              data: { name: part, parentId: parentId, userId: req.user.id }
             });
             pathMap[currentPath] = newFolder.id;
           }
@@ -402,17 +340,14 @@ app.post('/api/files/:id/extract', async (req, res) => {
       }
     }
 
-    // Pass 2: Files
     for (const entry of zipEntries) {
       if (!entry.isDirectory) {
         const parts = entry.entryName.split('/');
         const fileName = parts.pop();
         const dirPath = parts.join('/') + (parts.length > 0 ? '/' : '');
 
-        // Fallback to root if folder not found (shouldn't happen if Pass 1 works, or if zip is flat)
         const folderId = pathMap[dirPath] || rootFolder.id;
 
-        // Extract to flat uploads dir
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
         const physicalName = uniqueSuffix + '-' + fileName;
         const physicalPath = path.join(UPLOADS_DIR, physicalName);
@@ -426,6 +361,7 @@ app.post('/api/files/:id/extract', async (req, res) => {
             type: 'application/octet-stream',
             path: physicalName,
             folderId: folderId,
+            userId: req.user.id,
             isStarred: false,
             isTrashed: false
           }
@@ -441,16 +377,16 @@ app.post('/api/files/:id/extract', async (req, res) => {
 });
 
 // 11. Bulk Download (Zip)
-app.post('/api/download-zip', async (req, res) => {
+app.post('/api/download-zip', auth, async (req, res) => {
   try {
     const { items } = req.body;
     if (!items || items.length === 0) return res.status(400).json({ error: 'No items selected' });
 
+    const userId = req.user.id;
     const zip = new AdmZip();
 
-    // Helper to add folder recursively
     const addFolderToZip = async (folderId, zipPath) => {
-      const files = await prisma.file.findMany({ where: { folderId } });
+      const files = await prisma.file.findMany({ where: { folderId, userId } });
       for (const f of files) {
         const pPath = path.join(UPLOADS_DIR, f.path);
         if (fs.existsSync(pPath)) {
@@ -458,7 +394,7 @@ app.post('/api/download-zip', async (req, res) => {
         }
       }
 
-      const subfolders = await prisma.folder.findMany({ where: { parentId: folderId } });
+      const subfolders = await prisma.folder.findMany({ where: { parentId: folderId, userId } });
       for (const f of subfolders) {
         await addFolderToZip(f.id, zipPath + f.name + "/");
       }
@@ -466,7 +402,7 @@ app.post('/api/download-zip', async (req, res) => {
 
     for (const item of items) {
       if (item.type === 'file') {
-        const f = await prisma.file.findUnique({ where: { id: item.id } });
+        const f = await prisma.file.findUnique({ where: { id: item.id, userId } });
         if (f) {
           const pPath = path.join(UPLOADS_DIR, f.path);
           if (fs.existsSync(pPath)) {
@@ -474,7 +410,7 @@ app.post('/api/download-zip', async (req, res) => {
           }
         }
       } else if (item.type === 'folder') {
-        const f = await prisma.folder.findUnique({ where: { id: item.id } });
+        const f = await prisma.folder.findUnique({ where: { id: item.id, userId } });
         if (f) {
           await addFolderToZip(f.id, f.name + "/");
         }
@@ -491,3 +427,11 @@ app.post('/api/download-zip', async (req, res) => {
     res.status(500).json({ error: 'Zip generation failed' });
   }
 });
+
+if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
+
+module.exports = app;

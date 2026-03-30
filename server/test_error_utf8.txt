@@ -1,0 +1,18 @@
+Test Error: 
+Invalid `prisma.folder.findMany()` invocation in
+C:\Users\sriha\.gemini\antigravity\scratch\my-drive-app\server\test.js:6:41
+
+  3 
+  4 async function main() {
+  5   try {
+→ 6     const folders = await prisma.folder.findMany(
+Raw query failed. Code: `unknown`. Message: `Kind: Command failed: Error code 8000 (AtlasError): empty database name not allowed
+	at 6392d636f37b708da11fe341451b0d6c/atlasproxy/session_proxy.go:729
+	at 6392d636f37b708da11fe341451b0d6c/atlasproxy/session_proxy.go:1592
+	at 6392d636f37b708da11fe341451b0d6c/atlasproxy/session_proxy.go:1199
+	at 6392d636f37b708da11fe341451b0d6c/atlasproxy/session_proxy.go:1089
+	at 10gen/mongonet@v0.0.0-20260113205843-abe8b18a476f/proxy_session.go:398
+	at 10gen/mongonet@v0.0.0-20260113205843-abe8b18a476f/proxy_session.go:114
+	at 10gen/mongonet@v0.0.0-20260113205843-abe8b18a476f/session.go:274
+	at 10gen/mongonet@v0.0.0-20260113205843-abe8b18a476f/server.go:449
+	at src/runtime/asm_arm64.s:1223, labels: {}`
