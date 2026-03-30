@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const api = axios.create({
-    baseURL: 'http://localhost:3001/api',
+    baseURL: import.meta.env.MODE === 'development' ? 'http://localhost:3001/api' : '/api',
 });
 
 // Request interceptor to attach token
@@ -104,6 +104,10 @@ export const toggleFolder = async (id, data) => {
 export const extractFile = async (id) => {
     const response = await api.post(`/files/${id}/extract`);
     return response.data;
+};
+
+export const getUploadsUrl = (path) => {
+    return import.meta.env.MODE === 'development' ? `http://localhost:3001/uploads/${path}` : `/uploads/${path}`;
 };
 
 export const downloadZip = async (items) => {

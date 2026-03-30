@@ -1,5 +1,5 @@
 import { Folder, File as FileIcon, MoreVertical, Download, Star, Trash2 } from 'lucide-react';
-import { downloadFileUrl } from '../api';
+import { downloadFile, getUploadsUrl } from '../api';
 import { cn } from '../utils';
 
 const FileGrid = ({ folders, files, onFolderClick, onFileClick, onContextMenu, onSelection, selectedItems }) => {
@@ -87,7 +87,7 @@ const FileGrid = ({ folders, files, onFolderClick, onFileClick, onContextMenu, o
                                 {/* File Preview / Icon Area */}
                                 <div className="flex-1 flex items-center justify-center mb-3 bg-black/20 rounded-xl overflow-hidden relative">
                                     {file.type.startsWith('image/') ? (
-                                        <img src={`http://localhost:3001/uploads/${file.path}`} className="w-full h-full object-cover opacity-90 transition-opacity group-hover:opacity-100" alt={file.name} loading="lazy" />
+                                        <img src={getUploadsUrl(file.path)} className="w-full h-full object-cover opacity-90 transition-opacity group-hover:opacity-100" alt={file.name} loading="lazy" />
                                     ) : (
                                         <FileIcon className="w-10 h-10 text-cyan-500/80 group-hover:text-cyan-400 transition-colors" />
                                     )}
@@ -103,7 +103,7 @@ const FileGrid = ({ folders, files, onFolderClick, onFileClick, onContextMenu, o
 
                                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                         <button
-                                            onClick={(e) => { e.stopPropagation(); window.location.href = downloadFileUrl(file.id); }}
+                                            onClick={(e) => { e.stopPropagation(); downloadFile(file.id, file.name); }}
                                             className="p-1 hover:bg-white/10 rounded text-gray-400 hover:text-white transition-colors"
                                             title="Download"
                                         >
